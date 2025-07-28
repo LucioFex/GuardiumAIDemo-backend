@@ -4,6 +4,7 @@ import base64
 import binascii
 from openai import OpenAI
 from flask import Flask, request, jsonify, session
+from flask_cors import CORS
 from dotenv import load_dotenv
 
 # Carga de las vars de entorno desde el archivo .env
@@ -39,11 +40,13 @@ def configurar_cliente_vanilla():
         return None
 
 
-def obtener_respuesta_chatgpt(cliente, historial):
+def obtener_respuesta_chatgpt(cliente, historial, max_tokens=1024):
+    """Obtiene una respuesta del modelo de chat. Se añade max_tokens."""
     try:
         completion = cliente.chat.completions.create(
             model="gpt-4o",
-            messages=historial
+            messages=historial,
+            max_tokens=max_tokens # Limita la longitud de la respuesta
         )
         return completion.choices[0].message.content
     except Exception as e:
@@ -53,67 +56,83 @@ def obtener_respuesta_chatgpt(cliente, historial):
 # --- Aplicación Flask ---
 app = Flask(__name__)
 app.secret_key = FLASK_KEY
-
-# Ya no se configura un cliente global aquí
+CORS(
+    app,
+    resources={
+        r"/chat": {"origins": "http://localhost:4200"}
+    }, supports_credentials=True
+)
 
 
 @app.route('/')
 def index():
-    return "<h1>Servidor del Chatbot funcionando</h1><p>Usa el endpoint /chat para interactuar y /reset para reiniciar la conversación.</p>"
-
+    return "<h1>Servidor del Chatbot funcionando</h1>"
 
 @app.route('/chat', methods=['POST'])
 def chat():
+    print("Llega al chat")
     datos = request.json
     if not datos or 'mensaje' not in datos:
         return jsonify({"error": "Cuerpo de la solicitud inválido. Se requiere la clave 'mensaje'."}), 400
 
-    # 1. Decide qué cliente usar basado en el parámetro "GuardiumAI"
-    # Por defecto, usa Guardium si el parámetro no se especifica.
     usar_guardium = datos.get("GuardiumAI", True)
-
-    if usar_guardium:
-        print("Usando configuración de Guardium AI...")
-        cliente_openai = configurar_cliente_proxy()
-    else:
-        print("Usando configuración de OpenAI Vanilla...")
-        cliente_openai = configurar_cliente_vanilla()
+    cliente_openai = configurar_cliente_proxy() if usar_guardium else configurar_cliente_vanilla()
 
     if not cliente_openai:
         return jsonify({"error": "No se pudo configurar el cliente de OpenAI."}), 500
 
-    # El resto de la lógica permanece igual
-    texto_usuario = datos['mensaje']
-    texto_completo = texto_usuario
-
+    texto_completo = datos['mensaje']
     if 'archivo_pdf_b64' in datos and datos['archivo_pdf_b64']:
         try:
             pdf_bytes = base64.b64decode(datos['archivo_pdf_b64'])
-            documento_pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
-
-            texto_extraido_pdf = ""
-            for pagina in documento_pdf:
-                texto_extraido_pdf += pagina.get_text()
-            documento_pdf.close()
-
-            if texto_extraido_pdf:
-                texto_completo += f"\n\n{texto_extraido_pdf}\n"
-
-        except binascii.Error:
-            return jsonify({"error": "El string Base64 para el archivo PDF es inválido."}), 400
-        except Exception as e:
-            return jsonify({"error": f"Ocurrió un error al procesar el archivo PDF desde Base64: {e}"}), 500
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                texto_pdf = "".join(page.get_text() for page in doc)
+            if texto_pdf:
+                texto_completo += f"\n\n{texto_pdf}\n"
+        except (binascii.Error, Exception) as e:
+            return jsonify({"error": f"Error al procesar el PDF: {e}"}), 400
 
     historial_conversacion = session.get('historial', [])
     if not historial_conversacion:
         historial_conversacion.append({"role": "system", "content": "You are a helpful assistant."})
 
     historial_conversacion.append({"role": "user", "content": texto_completo})
+
+    # --- LÓGICA PRINCIPAL ---
+    # 1. Obtener la respuesta principal y descriptiva
     respuesta_gpt = obtener_respuesta_chatgpt(cliente_openai, historial_conversacion)
+
+    # Actualizar el historial principal de la conversación para el usuario
     historial_conversacion.append({"role": "assistant", "content": respuesta_gpt})
     session['historial'] = historial_conversacion
 
-    return jsonify({"respuesta": respuesta_gpt})
+    # --- NUEVA LÓGICA DE EVALUACIÓN ---
+    # 2. Realizar una segunda llamada para obtener el veredicto SI/NO
+    estado_aprobacion = "Unknown" # Valor por defecto
+    try:
+        prompt_evaluacion = (
+            f"En base al veredicto anterior, responde únicamente con la palabra 'SI' o 'NO' a si el candidato es un buen fit para la posición.\n\nTexto a analizar: '{respuesta_gpt}'"
+        )
+        historial_evaluacion = [{"role": "user", "content": prompt_evaluacion}]
+
+        # Usamos la misma función, pero con un límite bajo de tokens para una respuesta corta
+        veredicto_raw = obtener_respuesta_chatgpt(cliente_openai, historial_evaluacion, max_tokens=5)
+        veredicto_limpio = veredicto_raw.strip().upper()
+
+        if "SI" in veredicto_limpio:
+            estado_aprobacion = "YES"
+        elif "NO" in veredicto_limpio:
+            estado_aprobacion = "NO"
+
+    except Exception as e:
+        print(f"Error durante la evaluación SI/NO: {e}")
+        # estado_aprobacion ya es "Unknown"
+
+    # 3. Devolver la respuesta combinada
+    return jsonify({
+        "respuesta": respuesta_gpt,
+        "aprobado": estado_aprobacion
+    })
 
 
 @app.route('/reset', methods=['POST'])

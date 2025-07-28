@@ -8,7 +8,7 @@ flask = "~=3.1.1"
 openai = "~=1.97.1"
 python-dotenv = "~=1.1.1"
 PyMuPDF = "~=1.26.3"
-
+flask-cors = "*"
 
 [dev-packages]
 pypandoc = "~=1.15"
