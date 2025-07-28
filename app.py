@@ -1,4 +1,7 @@
 import os
+import fitz
+import base64
+import binascii
 from openai import OpenAI
 from flask import Flask, request, jsonify, session
 from dotenv import load_dotenv
@@ -15,6 +18,7 @@ PROXY_HEADERS = {"x-alltrue-llm-endpoint-identifier": PROXY_HEADER_VALUE}
 
 
 def configurar_cliente_proxy():
+    """Configura el cliente para usar el proxy de Guardium AI."""
     try:
         return OpenAI(
             api_key=API_KEY,
@@ -22,7 +26,16 @@ def configurar_cliente_proxy():
             default_headers=PROXY_HEADERS
         )
     except Exception as e:
-        print(f"Error al configurar el cliente de OpenAI: {e}")
+        print(f"Error al configurar el cliente PROXY de OpenAI: {e}")
+        return None
+
+
+def configurar_cliente_vanilla():
+    """Configura el cliente para usar OpenAI directamente."""
+    try:
+        return OpenAI(api_key=API_KEY)
+    except Exception as e:
+        print(f"Error al configurar el cliente VANILLA de OpenAI: {e}")
         return None
 
 
@@ -34,58 +47,78 @@ def obtener_respuesta_chatgpt(cliente, historial):
         )
         return completion.choices[0].message.content
     except Exception as e:
-        return f"Error al contactar la API a través del proxy: {e}"
+        return f"Error al contactar la API: {e}"
 
 
 # --- Aplicación Flask ---
 app = Flask(__name__)
-# IMPORTANTE: Se necesita una 'secret_key' para poder usar sesiones en Flask.
-# Para producción, usa una cadena de texto aleatoria y segura.
 app.secret_key = FLASK_KEY
 
-cliente_openai = configurar_cliente_proxy()
+# Ya no se configura un cliente global aquí
+
 
 @app.route('/')
 def index():
     return "<h1>Servidor del Chatbot funcionando</h1><p>Usa el endpoint /chat para interactuar y /reset para reiniciar la conversación.</p>"
 
+
 @app.route('/chat', methods=['POST'])
 def chat():
-    if not cliente_openai:
-        return jsonify({"error": "El cliente de OpenAI no está configurado."}), 500
-
     datos = request.json
-    # Ahora esperamos una clave "mensaje", no "historial"
     if not datos or 'mensaje' not in datos:
         return jsonify({"error": "Cuerpo de la solicitud inválido. Se requiere la clave 'mensaje'."}), 400
 
-    # 1. Recupera el historial de la sesión o crea uno nuevo si no existe.
-    historial_conversacion = session.get('historial', [])
+    # 1. Decide qué cliente usar basado en el parámetro "GuardiumAI"
+    # Por defecto, usa Guardium si el parámetro no se especifica.
+    usar_guardium = datos.get("GuardiumAI", True)
 
-    # Añade el mensaje de sistema si la conversación es nueva
+    if usar_guardium:
+        print("Usando configuración de Guardium AI...")
+        cliente_openai = configurar_cliente_proxy()
+    else:
+        print("Usando configuración de OpenAI Vanilla...")
+        cliente_openai = configurar_cliente_vanilla()
+
+    if not cliente_openai:
+        return jsonify({"error": "No se pudo configurar el cliente de OpenAI."}), 500
+
+    # El resto de la lógica permanece igual
+    texto_usuario = datos['mensaje']
+    texto_completo = texto_usuario
+
+    if 'archivo_pdf_b64' in datos and datos['archivo_pdf_b64']:
+        try:
+            pdf_bytes = base64.b64decode(datos['archivo_pdf_b64'])
+            documento_pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+            texto_extraido_pdf = ""
+            for pagina in documento_pdf:
+                texto_extraido_pdf += pagina.get_text()
+            documento_pdf.close()
+
+            if texto_extraido_pdf:
+                texto_completo += f"\n\n{texto_extraido_pdf}\n"
+
+        except binascii.Error:
+            return jsonify({"error": "El string Base64 para el archivo PDF es inválido."}), 400
+        except Exception as e:
+            return jsonify({"error": f"Ocurrió un error al procesar el archivo PDF desde Base64: {e}"}), 500
+
+    historial_conversacion = session.get('historial', [])
     if not historial_conversacion:
         historial_conversacion.append({"role": "system", "content": "You are a helpful assistant."})
 
-    # 2. Añade el nuevo mensaje del usuario al historial
-    historial_conversacion.append({"role": "user", "content": datos['mensaje']})
-
-    # 3. Obtiene la respuesta del modelo
+    historial_conversacion.append({"role": "user", "content": texto_completo})
     respuesta_gpt = obtener_respuesta_chatgpt(cliente_openai, historial_conversacion)
-
-    # 4. Añade la respuesta del asistente al historial
     historial_conversacion.append({"role": "assistant", "content": respuesta_gpt})
-
-    # 5. Guarda el historial actualizado de vuelta en la sesión
     session['historial'] = historial_conversacion
 
     return jsonify({"respuesta": respuesta_gpt})
 
+
 @app.route('/reset', methods=['POST'])
 def reset_chat():
-    """
-    Endpoint para borrar el historial de la conversación actual.
-    """
-    session.pop('historial', None)  # Elimina el historial de la sesión
+    session.pop('historial', None)
     return jsonify({"status": "Conversación reiniciada"})
 
 
