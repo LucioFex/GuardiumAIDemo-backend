@@ -17,7 +17,6 @@ PROXY_BASE_URL = os.getenv("PROXY_BASE_URL")
 PROXY_HEADER_VALUE = os.getenv("PROXY_HEADER_IDENTIFIER")
 PROXY_HEADERS = {"x-alltrue-llm-endpoint-identifier": PROXY_HEADER_VALUE}
 
-
 def configurar_cliente_proxy():
     """Configura el cliente para usar el proxy de Guardium AI."""
     try:
@@ -30,7 +29,6 @@ def configurar_cliente_proxy():
         print(f"Error al configurar el cliente PROXY de OpenAI: {e}")
         return None
 
-
 def configurar_cliente_vanilla():
     """Configura el cliente para usar OpenAI directamente."""
     try:
@@ -39,30 +37,22 @@ def configurar_cliente_vanilla():
         print(f"Error al configurar el cliente VANILLA de OpenAI: {e}")
         return None
 
-
 def obtener_respuesta_chatgpt(cliente, historial, max_tokens=1024):
     """Obtiene una respuesta del modelo de chat. Se añade max_tokens."""
     try:
         completion = cliente.chat.completions.create(
             model="gpt-4o",
             messages=historial,
-            max_tokens=max_tokens # Limita la longitud de la respuesta
+            max_tokens=max_tokens
         )
         return completion.choices[0].message.content
     except Exception as e:
         return f"Error al contactar la API: {e}"
 
-
 # --- Aplicación Flask ---
 app = Flask(__name__)
 app.secret_key = FLASK_KEY
-CORS(
-    app,
-    resources={
-        r"/chat": {"origins": "http://localhost:4200"}
-    }, supports_credentials=True
-)
-
+CORS(app, resources={r"/*": {"origins": "*"}}) # Habilitar CORS para todos los orígenes
 
 @app.route('/')
 def index():
@@ -70,7 +60,6 @@ def index():
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    print("Llega al chat")
     datos = request.json
     if not datos or 'mensaje' not in datos:
         return jsonify({"error": "Cuerpo de la solicitud inválido. Se requiere la clave 'mensaje'."}), 400
@@ -97,49 +86,47 @@ def chat():
         historial_conversacion.append({"role": "system", "content": "You are a helpful assistant."})
 
     historial_conversacion.append({"role": "user", "content": texto_completo})
-
+    
     # --- LÓGICA PRINCIPAL ---
-    # 1. Obtener la respuesta principal y descriptiva
     respuesta_gpt = obtener_respuesta_chatgpt(cliente_openai, historial_conversacion)
-
-    # Actualizar el historial principal de la conversación para el usuario
+    
     historial_conversacion.append({"role": "assistant", "content": respuesta_gpt})
     session['historial'] = historial_conversacion
 
-    # --- NUEVA LÓGICA DE EVALUACIÓN ---
-    # 2. Realizar una segunda llamada para obtener el veredicto SI/NO
-    estado_aprobacion = "Unknown" # Valor por defecto
-    try:
-        prompt_evaluacion = (
-            f"En base al veredicto anterior, responde únicamente con la palabra 'SI' o 'NO' a si el candidato es un buen fit para la posición.\n\nTexto a analizar: '{respuesta_gpt}'"
-        )
-        historial_evaluacion = [{"role": "user", "content": prompt_evaluacion}]
+    # --- LÓGICA DE EVALUACIÓN MEJORADA ---
+    estado_aprobacion = "Unknown"
 
-        # Usamos la misma función, pero con un límite bajo de tokens para una respuesta corta
-        veredicto_raw = obtener_respuesta_chatgpt(cliente_openai, historial_evaluacion, max_tokens=5)
-        veredicto_limpio = veredicto_raw.strip().upper()
+    # 1. Verificar error de seguridad de prompt injection
+    if "'message': 'Blocked: PII detected in input'" in respuesta_gpt:
+        estado_aprobacion = "Prompt-Injection-Detected"
+    else:
+        # 3. Si no hay errores, proceder con la evaluación SI/NO
+        try:
+            prompt_evaluacion = (
+                f"En base al veredicto anterior, responde únicamente con la palabra 'SI' o 'NO' a si el candidato es un buen fit para la posición.\n\nTexto a analizar: '{respuesta_gpt}'"
+            )
+            historial_evaluacion = [{"role": "user", "content": prompt_evaluacion}]
+            veredicto_raw = obtener_respuesta_chatgpt(cliente_openai, historial_evaluacion, max_tokens=5)
+            veredicto_limpio = veredicto_raw.strip().upper()
 
-        if "SI" in veredicto_limpio:
-            estado_aprobacion = "YES"
-        elif "NO" in veredicto_limpio:
-            estado_aprobacion = "NO"
+            if "SI" in veredicto_limpio:
+                estado_aprobacion = "YES"
+            elif "NO" in veredicto_limpio:
+                estado_aprobacion = "NO"
 
-    except Exception as e:
-        print(f"Error durante la evaluación SI/NO: {e}")
-        # estado_aprobacion ya es "Unknown"
+        except Exception as e:
+            print(f"Error durante la evaluación SI/NO: {e}")
 
-    # 3. Devolver la respuesta combinada
+    # Devolver la respuesta combinada
     return jsonify({
         "respuesta": respuesta_gpt,
         "aprobado": estado_aprobacion
     })
 
-
 @app.route('/reset', methods=['POST'])
 def reset_chat():
     session.pop('historial', None)
     return jsonify({"status": "Conversación reiniciada"})
-
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
