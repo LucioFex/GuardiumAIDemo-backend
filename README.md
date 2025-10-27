@@ -13,7 +13,7 @@ Backend para la demo de IBM Guardium For AI usada en el webinar de Xelere. Simul
 Levantar localmente un backend simple que recibe CVs, simula envío a un LLM y muestra cómo una capa de inspección (simulada) puede:
 - detectar inyecciones de prompt en texto,
 - bloquear o sanitizar la petición,
-- registrar el evento para auditoría/alerta (mismo flujo que se demuestra con Guardium For AI en el webinar). :contentReference[oaicite:3]{index=3}
+- registrar el evento para auditoría/alerta (mismo flujo que se demuestra con Guardium For AI en el webinar).
 
 ## Plataformas soportadas
 
@@ -39,8 +39,9 @@ pipenv shell
 
 # configurar variables (copia .env.example -> .env y ajustá)
 cp .env.example .env
-# EDITAR .env si hace falta (PUERTO, MODELO_SIMULADO, LOG_LEVEL, etc.)
+# EDITAR .env si hace falta
 
 # ejecutar
 python app.py
 # o, si el proyecto usa flask: FLASK_APP=app.py flask run --host=0.0.0.0
+```
