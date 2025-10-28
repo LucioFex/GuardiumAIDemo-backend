@@ -5,6 +5,8 @@ Backend para la demo de IBM Guardium AI de Xelere
 -->
 
 # GuardiumAIDemo-backend
+
+
 Backend para la demo de IBM Guardium For AI usada en el webinar de Xelere. Simula un microservicio de ATS (recepción de CVs) y un punto de integración donde se inspeccionan/registran solicitudes de inferencia para detectar *prompt injection* antes de enviarlas al modelo.
 
 <img src="https://github.com/user-attachments/assets/364ee9dd-d3cc-4459-8865-b0ecdfba0885" width=750px height=auto>
@@ -45,3 +47,7 @@ cp .env.example .env
 python app.py
 # o, si el proyecto usa flask: FLASK_APP=app.py flask run --host=0.0.0.0
 ```
+
+---
+
+<img width="250" height="auto" alt="logo xelerewhite-02 (2)" src="https://github.com/user-attachments/assets/1fc4f49e-006c-4c0d-b532-7a732486936b" />
